@@ -1,0 +1,301 @@
+{
+  "name": "stm32-dev-tools",
+  "displayName": "STM32 Development Tools",
+  "description": "STM32 开发工具集 - 支持 CMake 构建、GCC-ARM 编译、OpenOCD 调试下载",
+  "version": "1.0.0",
+  "publisher": "stm32-dev",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "extensionDependencies": [
+    "marus25.cortex-debug"
+  ],
+  "extensionPack": [
+    "marus25.cortex-debug",
+    "ms-vscode.cmake-tools",
+    "ms-vscode.cpptools"
+  ],
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "stm32",
+    "arm",
+    "embedded",
+    "openocd",
+    "cmake",
+    "cortex-m"
+  ],
+  "activationEvents": [
+    "workspaceContains:CMakeLists.txt",
+    "onDebugResolve:cortex-debug"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "stm32.selectChip",
+        "title": "STM32: 选择芯片型号",
+        "category": "STM32"
+      },
+      {
+        "command": "stm32.build",
+        "title": "STM32: 编译项目",
+        "category": "STM32",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "stm32.clean",
+        "title": "STM32: 清理项目",
+        "category": "STM32"
+      },
+      {
+        "command": "stm32.rebuild",
+        "title": "STM32: 重新编译",
+        "category": "STM32"
+      },
+      {
+        "command": "stm32.generateBin",
+        "title": "STM32: 生成 BIN/HEX 文件",
+        "category": "STM32"
+      },
+      {
+        "command": "stm32.flash",
+        "title": "STM32: 下载程序到芯片",
+        "category": "STM32",
+        "icon": "$(arrow-down)"
+      },
+      {
+        "command": "stm32.debug",
+        "title": "STM32: 开始调试",
+        "category": "STM32",
+        "icon": "$(debug-alt)"
+      },
+      {
+        "command": "stm32.openocdStart",
+        "title": "STM32: 启动 OpenOCD 服务",
+        "category": "STM32"
+      },
+      {
+        "command": "stm32.openocdStop",
+        "title": "STM32: 停止 OpenOCD 服务",
+        "category": "STM32"
+      },
+      {
+        "command": "stm32.generateLaunchConfig",
+        "title": "STM32: 生成调试配置",
+        "category": "STM32"
+      },
+      {
+        "command": "stm32.detectToolchain",
+        "title": "STM32: 自动检测工具链",
+        "category": "STM32",
+        "icon": "$(search)"
+      },
+      {
+        "command": "stm32.autoDetectToolchain",
+        "title": "STM32: 快速检测工具链 (静默)",
+        "category": "STM32"
+      },
+      {
+        "command": "stm32.selectDebugger",
+        "title": "STM32: 选择调试器",
+        "category": "STM32",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "stm32.selectBuildType",
+        "title": "STM32: 选择构建类型",
+        "category": "STM32",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "stm32.autoDetectChip",
+        "title": "STM32: 自动检测芯片型号",
+        "category": "STM32",
+        "icon": "$(search)"
+      },
+      {
+        "command": "stm32.serial.toggle",
+        "title": "STM32: 切换串口连接",
+        "category": "STM32",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "stm32.serial.connect",
+        "title": "STM32: 连接串口",
+        "category": "STM32"
+      },
+      {
+        "command": "stm32.serial.disconnect",
+        "title": "STM32: 断开串口",
+        "category": "STM32"
+      },
+      {
+        "command": "stm32.serial.send",
+        "title": "STM32: 发送串口数据",
+        "category": "STM32"
+      },
+      {
+        "command": "stm32.serial.show",
+        "title": "STM32: 显示串口监视器",
+        "category": "STM32"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "stm32-explorer",
+          "title": "STM32 开发",
+          "icon": "resources/stm32-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "stm32-explorer": [
+        {
+          "id": "stm32-project",
+          "name": "项目配置"
+        }
+      ]
+    },
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "stm32.selectChip"
+        },
+        {
+          "command": "stm32.build"
+        },
+        {
+          "command": "stm32.flash"
+        },
+        {
+          "command": "stm32.debug"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "STM32 Development Tools",
+      "properties": {
+        "stm32.toolchainPath": {
+          "type": "string",
+          "default": "",
+          "description": "GCC ARM 工具链路径 (arm-none-eabi-gcc 所在目录)"
+        },
+        "stm32.openocdPath": {
+          "type": "string",
+          "default": "",
+          "description": "OpenOCD 可执行文件路径"
+        },
+        "stm32.openocdScriptsPath": {
+          "type": "string",
+          "default": "",
+          "description": "OpenOCD 脚本目录路径"
+        },
+        "stm32.cmakePath": {
+          "type": "string",
+          "default": "cmake",
+          "description": "CMake 可执行文件路径"
+        },
+        "stm32.selectedChip": {
+          "type": "string",
+          "default": "",
+          "description": "当前选择的 STM32 芯片型号"
+        },
+        "stm32.debugInterface": {
+          "type": "string",
+          "enum": [
+            "stlink",
+            "stlink-v2",
+            "stlink-v2-1",
+            "stlink-v3",
+            "jlink",
+            "cmsis-dap"
+          ],
+          "default": "stlink",
+          "description": "调试器接口类型"
+        },
+        "stm32.buildType": {
+          "type": "string",
+          "enum": [
+            "Debug",
+            "Release",
+            "RelWithDebInfo",
+            "MinSizeRel"
+          ],
+          "default": "Debug",
+          "description": "CMake 构建类型"
+        },
+        "stm32.buildDirectory": {
+          "type": "string",
+          "default": "build",
+          "description": "构建输出目录"
+        },
+        "stm32.elfFile": {
+          "type": "string",
+          "default": "",
+          "description": "ELF 文件路径 (相对于构建目录)"
+        },
+        "stm32.svdFile": {
+          "type": "string",
+          "default": "",
+          "description": "SVD 文件路径 (用于寄存器查看)"
+        }
+      }
+    },
+    "taskDefinitions": [
+      {
+        "type": "stm32",
+        "required": [
+          "task"
+        ],
+        "properties": {
+          "task": {
+            "type": "string",
+            "description": "任务类型: build, clean, flash"
+          }
+        }
+      }
+    ],
+    "problemMatchers": [
+      {
+        "name": "gcc-arm",
+        "owner": "stm32",
+        "fileLocation": [
+          "relative",
+          "${workspaceFolder}"
+        ],
+        "pattern": {
+          "regexp": "^(.+):(\\d+):(\\d+):\\s+(warning|error):\\s+(.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile",
+    "lint": "eslint src --ext ts",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "@vscode/vsce": "^2.22.0",
+    "eslint": "^8.54.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "xml2js": "^0.6.2"
+  }
+}
