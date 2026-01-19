@@ -1,7 +1,13 @@
+/**
+ * 工具链检测器
+ * 自动检测 GCC ARM、OpenOCD、CMake、Ninja 等开发工具
+ */
+
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { execSync } from 'child_process';
+import { updateSTM32ConfigBatch } from './config';
 
 export interface DetectedTools {
     gccPath?: string;
@@ -80,8 +86,6 @@ export class ToolchainDetector {
      */
     async detectGccArm(): Promise<{ path: string; version: string } | null> {
         const gccNames = ['arm-none-eabi-gcc', 'arm-none-eabi-gcc.exe'];
-        
-        // 常见安装路径
         const commonPaths = this.getCommonGccPaths();
 
         // 先从 PATH 中查找
@@ -96,7 +100,6 @@ export class ToolchainDetector {
         // 在常见路径中查找
         for (const basePath of commonPaths) {
             if (fs.existsSync(basePath)) {
-                // 查找包含 arm-none-eabi 的目录
                 const dirs = this.findDirectories(basePath, /arm-none-eabi|gcc-arm/i);
                 for (const dir of dirs) {
                     const binPath = path.join(dir, 'bin');
@@ -123,8 +126,6 @@ export class ToolchainDetector {
      */
     async detectOpenOCD(): Promise<{ path: string; scriptsPath: string; version: string } | null> {
         const openocdNames = ['openocd', 'openocd.exe'];
-        
-        // 常见安装路径
         const commonPaths = this.getCommonOpenOCDPaths();
 
         // 先从 PATH 中查找
@@ -252,11 +253,9 @@ export class ToolchainDetector {
                 'D:\\Program Files',
                 path.join(home, 'AppData', 'Local'),
                 path.join(home, 'scoop', 'apps'),
-                // STM32CubeIDE 内置工具链
                 'C:\\ST\\STM32CubeIDE_1.13.0\\STM32CubeIDE\\plugins',
                 'C:\\ST\\STM32CubeIDE_1.14.0\\STM32CubeIDE\\plugins',
                 'C:\\ST\\STM32CubeIDE_1.15.0\\STM32CubeIDE\\plugins',
-                // xpack 路径
                 path.join(home, 'AppData', 'Roaming', 'xPacks', '@xpack-dev-tools', 'arm-none-eabi-gcc'),
             );
         } else {
@@ -265,9 +264,8 @@ export class ToolchainDetector {
                 '/opt',
                 '/usr',
                 path.join(home, '.local'),
-                // xpack 路径
                 path.join(home, '.local', 'xPacks', '@xpack-dev-tools', 'arm-none-eabi-gcc'),
-                '/Applications/ARM', // macOS
+                '/Applications/ARM',
             );
         }
 
@@ -289,11 +287,9 @@ export class ToolchainDetector {
                 'D:\\',
                 path.join(home, 'AppData', 'Local'),
                 path.join(home, 'scoop', 'apps'),
-                // STM32CubeIDE 内置 OpenOCD
                 'C:\\ST\\STM32CubeIDE_1.13.0\\STM32CubeIDE\\plugins',
                 'C:\\ST\\STM32CubeIDE_1.14.0\\STM32CubeIDE\\plugins',
                 'C:\\ST\\STM32CubeIDE_1.15.0\\STM32CubeIDE\\plugins',
-                // xpack 路径
                 path.join(home, 'AppData', 'Roaming', 'xPacks', '@xpack-dev-tools', 'openocd'),
             );
         } else {
@@ -303,7 +299,7 @@ export class ToolchainDetector {
                 '/usr',
                 path.join(home, '.local'),
                 path.join(home, '.local', 'xPacks', '@xpack-dev-tools', 'openocd'),
-                '/Applications', // macOS
+                '/Applications',
             );
         }
 
@@ -323,7 +319,6 @@ export class ToolchainDetector {
                 'C:\\Program Files\\ninja',
                 path.join(home, 'scoop', 'apps', 'ninja', 'current'),
                 path.join(home, 'AppData', 'Local', 'Programs', 'ninja'),
-                // CMake 可能包含 ninja
                 'C:\\Program Files\\CMake\\bin',
             );
         } else {
@@ -353,7 +348,7 @@ export class ToolchainDetector {
             }
         }
 
-        // Windows: 尝试使用 where 命令
+        // 使用系统命令查找
         if (process.platform === 'win32') {
             try {
                 const result = execSync(`where ${name}`, { encoding: 'utf8', timeout: 5000 });
@@ -365,7 +360,6 @@ export class ToolchainDetector {
                 // 忽略
             }
         } else {
-            // Unix: 尝试使用 which 命令
             try {
                 const result = execSync(`which ${name}`, { encoding: 'utf8', timeout: 5000 });
                 const firstLine = result.trim();
@@ -397,7 +391,6 @@ export class ToolchainDetector {
                         if (pattern.test(entry.name)) {
                             results.push(fullPath);
                         }
-                        // 继续递归搜索
                         if (depth < maxDepth) {
                             search(fullPath, depth + 1);
                         }
@@ -455,7 +448,6 @@ export class ToolchainDetector {
             const match = result.match(/(\d+\.\d+\.\d+)/);
             return match ? match[1] : 'unknown';
         } catch (e: unknown) {
-            // OpenOCD 将版本信息输出到 stderr
             const error = e as { stderr?: Buffer };
             if (error.stderr) {
                 const stderr = error.stderr.toString();
@@ -495,20 +487,12 @@ export class ToolchainDetector {
      * 应用检测到的工具配置
      */
     async applyDetectedTools(tools: DetectedTools): Promise<void> {
-        const config = vscode.workspace.getConfiguration('stm32');
-
-        if (tools.gccPath) {
-            await config.update('toolchainPath', tools.gccPath, vscode.ConfigurationTarget.Global);
-        }
-        if (tools.openocdPath) {
-            await config.update('openocdPath', tools.openocdPath, vscode.ConfigurationTarget.Global);
-        }
-        if (tools.openocdScriptsPath) {
-            await config.update('openocdScriptsPath', tools.openocdScriptsPath, vscode.ConfigurationTarget.Global);
-        }
-        if (tools.cmakePath) {
-            await config.update('cmakePath', tools.cmakePath, vscode.ConfigurationTarget.Global);
-        }
+        await updateSTM32ConfigBatch({
+            toolchainPath: tools.gccPath,
+            openocdPath: tools.openocdPath,
+            openocdScriptsPath: tools.openocdScriptsPath,
+            cmakePath: tools.cmakePath
+        }, vscode.ConfigurationTarget.Global);
     }
 
     /**
@@ -571,4 +555,3 @@ export class ToolchainDetector {
         }
     }
 }
-

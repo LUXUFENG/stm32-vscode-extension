@@ -1,7 +1,14 @@
+/**
+ * OpenOCD 管理器
+ * 负责 OpenOCD 服务的启动、停止和程序烧录
+ */
+
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { CMakeBuilder } from './cmakeBuilder';
+import { getSTM32Config } from './config';
+import { getOpenOCDTarget, getInterfaceConfig, getFlashAddress, quotePath, toForwardSlash } from './chipUtils';
 
 export class OpenOCDManager {
     private outputChannel: vscode.OutputChannel;
@@ -13,81 +20,18 @@ export class OpenOCDManager {
         this.cmakeBuilder = new CMakeBuilder(outputChannel);
     }
 
-    private getConfig() {
-        const config = vscode.workspace.getConfiguration('stm32');
-        return {
-            openocdPath: config.get<string>('openocdPath') || 'openocd',
-            openocdScriptsPath: config.get<string>('openocdScriptsPath') || '',
-            debugInterface: config.get<string>('debugInterface') || 'stlink',
-            selectedChip: config.get<string>('selectedChip') || '',
-            elfFile: config.get<string>('elfFile') || '',
-            buildType: config.get<string>('buildType') || 'Debug'
-        };
-    }
-
-    private getOpenOCDTarget(): string {
-        const config = this.getConfig();
-        const chipName = config.selectedChip.toLowerCase();
-
-        // 根据芯片型号返回对应的 OpenOCD target 配置
-        if (chipName.startsWith('stm32f0')) return 'stm32f0x';
-        if (chipName.startsWith('stm32f1')) return 'stm32f1x';
-        if (chipName.startsWith('stm32f2')) return 'stm32f2x';
-        if (chipName.startsWith('stm32f3')) return 'stm32f3x';
-        if (chipName.startsWith('stm32f4')) return 'stm32f4x';
-        if (chipName.startsWith('stm32f7')) return 'stm32f7x';
-        if (chipName.startsWith('stm32g0')) return 'stm32g0x';
-        if (chipName.startsWith('stm32g4')) return 'stm32g4x';
-        if (chipName.startsWith('stm32h7')) return 'stm32h7x';
-        if (chipName.startsWith('stm32l0')) return 'stm32l0';
-        if (chipName.startsWith('stm32l1')) return 'stm32l1';
-        if (chipName.startsWith('stm32l4')) return 'stm32l4x';
-        if (chipName.startsWith('stm32l5')) return 'stm32l5x';
-        if (chipName.startsWith('stm32u5')) return 'stm32u5x';
-        if (chipName.startsWith('stm32wb')) return 'stm32wbx';
-        if (chipName.startsWith('stm32wl')) return 'stm32wlx';
-
-        return 'stm32f1x'; // 默认
-    }
-
-    private getInterfaceConfig(): string {
-        const config = this.getConfig();
-        switch (config.debugInterface) {
-            case 'stlink':
-            case 'stlink-v2':
-                return 'interface/stlink-v2.cfg';
-            case 'stlink-v2-1':
-                return 'interface/stlink-v2-1.cfg';
-            case 'stlink-v3':
-                return 'interface/stlink.cfg';
-            case 'jlink':
-                return 'interface/jlink.cfg';
-            case 'cmsis-dap':
-                return 'interface/cmsis-dap.cfg';
-            default:
-                return 'interface/stlink.cfg';
-        }
-    }
-
     /**
-     * 给包含空格的路径加上引号
+     * 启动 OpenOCD 服务
      */
-    private quotePath(p: string): string {
-        if (p.includes(' ') && !p.startsWith('"') && !p.startsWith("'")) {
-            return `"${p}"`;
-        }
-        return p;
-    }
-
     async start(): Promise<void> {
         if (this.openocdProcess) {
             this.outputChannel.appendLine('OpenOCD 已在运行');
             return;
         }
 
-        const config = this.getConfig();
-        const target = this.getOpenOCDTarget();
-        const interfaceConfig = this.getInterfaceConfig();
+        const config = getSTM32Config();
+        const target = getOpenOCDTarget(config.selectedChip);
+        const interfaceConfig = getInterfaceConfig(config.debugInterface);
 
         const args: string[] = [];
 
@@ -102,8 +46,8 @@ export class OpenOCDManager {
         // 添加目标配置
         args.push('-f', `target/${target}.cfg`);
 
-        const openocdCmd = this.quotePath(config.openocdPath);
-        const quotedArgs = args.map(arg => this.quotePath(arg));
+        const openocdCmd = quotePath(config.openocdPath);
+        const quotedArgs = args.map(arg => quotePath(arg));
         
         this.outputChannel.appendLine(`启动 OpenOCD: ${openocdCmd} ${quotedArgs.join(' ')}`);
 
@@ -118,7 +62,6 @@ export class OpenOCDManager {
                 const output = data.toString();
                 this.outputChannel.appendLine(`[OpenOCD] ${output}`);
                 
-                // 检测 OpenOCD 是否成功启动
                 if (output.includes('Listening on port') && !started) {
                     started = true;
                     resolve();
@@ -158,6 +101,9 @@ export class OpenOCDManager {
         });
     }
 
+    /**
+     * 停止 OpenOCD 服务
+     */
     stop(): void {
         if (this.openocdProcess) {
             this.openocdProcess.kill();
@@ -166,12 +112,18 @@ export class OpenOCDManager {
         }
     }
 
+    /**
+     * 检查 OpenOCD 是否正在运行
+     */
     isRunning(): boolean {
         return this.openocdProcess !== null;
     }
 
+    /**
+     * 烧录程序到芯片
+     */
     async flash(): Promise<void> {
-        const config = this.getConfig();
+        const config = getSTM32Config();
         
         // 查找可烧录的文件 (ELF, BIN, HEX)
         let flashFile: string | undefined = config.elfFile;
@@ -193,38 +145,33 @@ export class OpenOCDManager {
 
         this.outputChannel.appendLine(`下载程序: ${flashFile}`);
 
-        const target = this.getOpenOCDTarget();
-        const interfaceConfig = this.getInterfaceConfig();
+        const target = getOpenOCDTarget(config.selectedChip);
+        const interfaceConfig = getInterfaceConfig(config.debugInterface);
 
         const args: string[] = [];
 
         if (config.openocdScriptsPath) {
-            // 将 Windows 反斜杠转换为正斜杠
-            args.push('-s', config.openocdScriptsPath.replace(/\\/g, '/'));
+            args.push('-s', toForwardSlash(config.openocdScriptsPath));
         }
 
         args.push('-f', interfaceConfig);
         args.push('-f', `target/${target}.cfg`);
         
-        // 根据文件类型选择不同的烧录命令
-        // 将 Windows 反斜杠转换为正斜杠，避免转义问题
-        const flashFilePath = flashFile.replace(/\\/g, '/');
+        // 将路径转换为正斜杠格式
+        const flashFilePath = toForwardSlash(flashFile);
         
         const ext = path.extname(flashFile).toLowerCase();
         if (ext === '.bin') {
-            // BIN 文件需要指定起始地址 (默认 0x08000000 for STM32)
-            const flashAddress = this.getFlashAddress();
+            // BIN 文件需要指定起始地址
+            const flashAddress = getFlashAddress(config.selectedChip);
             args.push('-c', `program "${flashFilePath}" verify reset exit ${flashAddress}`);
-        } else if (ext === '.hex') {
-            // HEX 文件包含地址信息
-            args.push('-c', `program "${flashFilePath}" verify reset exit`);
         } else {
-            // ELF 文件
+            // HEX 或 ELF 文件
             args.push('-c', `program "${flashFilePath}" verify reset exit`);
         }
 
-        const openocdCmd = this.quotePath(config.openocdPath);
-        const quotedArgs = args.map(arg => this.quotePath(arg));
+        const openocdCmd = quotePath(config.openocdPath);
+        const quotedArgs = args.map(arg => quotePath(arg));
 
         return new Promise((resolve, reject) => {
             const flashProcess = spawn(openocdCmd, quotedArgs, {
@@ -254,10 +201,13 @@ export class OpenOCDManager {
         });
     }
 
+    /**
+     * 复位芯片
+     */
     async reset(): Promise<void> {
-        const config = this.getConfig();
-        const target = this.getOpenOCDTarget();
-        const interfaceConfig = this.getInterfaceConfig();
+        const config = getSTM32Config();
+        const target = getOpenOCDTarget(config.selectedChip);
+        const interfaceConfig = getInterfaceConfig(config.debugInterface);
 
         const args: string[] = [];
 
@@ -271,8 +221,8 @@ export class OpenOCDManager {
         args.push('-c', 'reset');
         args.push('-c', 'exit');
 
-        const openocdCmd = this.quotePath(config.openocdPath);
-        const quotedArgs = args.map(arg => this.quotePath(arg));
+        const openocdCmd = quotePath(config.openocdPath);
+        const quotedArgs = args.map(arg => quotePath(arg));
 
         return new Promise((resolve, reject) => {
             const resetProcess = spawn(openocdCmd, quotedArgs, {
@@ -294,14 +244,18 @@ export class OpenOCDManager {
         });
     }
 
+    /**
+     * 获取调试配置文件列表
+     */
     getDebugConfigFiles(): string[] {
-        const target = this.getOpenOCDTarget();
-        const interfaceConfig = this.getInterfaceConfig();
+        const config = getSTM32Config();
+        const target = getOpenOCDTarget(config.selectedChip);
+        const interfaceConfig = getInterfaceConfig(config.debugInterface);
         return [interfaceConfig, `target/${target}.cfg`];
     }
 
     /**
-     * 选择要烧录的文件（根据当前构建类型优先选择）
+     * 选择要烧录的文件
      */
     private async selectFlashFile(): Promise<string | undefined> {
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -309,8 +263,8 @@ export class OpenOCDManager {
             return undefined;
         }
 
-        const config = this.getConfig();
-        const buildType = config.buildType;  // Debug 或 Release
+        const config = getSTM32Config();
+        const buildType = config.buildType;
         const projectName = path.basename(workspaceFolder.uri.fsPath);
         const workspacePath = workspaceFolder.uri.fsPath;
 
@@ -339,7 +293,6 @@ export class OpenOCDManager {
             priorityFiles = priorityFiles.concat(files);
         }
 
-        // 如果在当前构建类型目录找到了文件
         if (priorityFiles.length > 0) {
             // 优先选择与项目同名的 ELF 文件
             const projectElf = priorityFiles.find(f => {
@@ -350,12 +303,10 @@ export class OpenOCDManager {
                 return projectElf.fsPath;
             }
 
-            // 只有一个文件，直接返回
             if (priorityFiles.length === 1) {
                 return priorityFiles[0].fsPath;
             }
 
-            // 多个文件，让用户选择
             return this.promptSelectFlashFile(priorityFiles, workspacePath, buildType);
         }
 
@@ -371,7 +322,6 @@ export class OpenOCDManager {
         }
 
         if (allFiles.length === 0) {
-            // 如果 build 目录没有文件，提示用户先编译
             const choice = await vscode.window.showWarningMessage(
                 `在 build/${buildType} 目录中找不到固件文件，是否先编译项目？`,
                 '编译项目',
@@ -380,7 +330,6 @@ export class OpenOCDManager {
             
             if (choice === '编译项目') {
                 await vscode.commands.executeCommand('stm32.build');
-                // 重新搜索
                 return this.selectFlashFile();
             } else if (choice === '手动选择文件') {
                 const fileUri = await vscode.window.showOpenDialog({
@@ -411,12 +360,10 @@ export class OpenOCDManager {
             return this.promptSelectFlashFile(buildTypeFiles, workspacePath, buildType);
         }
 
-        // 只有一个文件
         if (allFiles.length === 1) {
             return allFiles[0].fsPath;
         }
 
-        // 多个文件，让用户选择
         return this.promptSelectFlashFile(allFiles, workspacePath, buildType);
     }
 
@@ -441,13 +388,11 @@ export class OpenOCDManager {
             };
         });
 
-        // 排序：当前构建类型优先，然后按文件类型 ELF > HEX > BIN
+        // 排序：当前构建类型优先
         items.sort((a, b) => {
-            // 先按构建类型
             if (a.isCurrentType !== b.isCurrentType) {
                 return b.isCurrentType ? 1 : -1;
             }
-            // 再按文件类型
             const order: Record<string, number> = { '.elf': 0, '.hex': 1, '.bin': 2 };
             const extA = path.extname(a.path).toLowerCase();
             const extB = path.extname(b.path).toLowerCase();
@@ -461,30 +406,4 @@ export class OpenOCDManager {
 
         return selected?.path;
     }
-
-    /**
-     * 获取 Flash 起始地址
-     */
-    private getFlashAddress(): string {
-        const config = this.getConfig();
-        const chipName = config.selectedChip.toLowerCase();
-
-        // STM32 系列的 Flash 起始地址
-        // 大部分 STM32 的 Flash 起始地址都是 0x08000000
-        // 但某些系列可能不同
-        if (chipName.startsWith('stm32h7')) {
-            // STM32H7 某些型号可能有不同的地址
-            return '0x08000000';
-        }
-        if (chipName.startsWith('stm32wb')) {
-            return '0x08000000';
-        }
-        if (chipName.startsWith('stm32l0') || chipName.startsWith('stm32l1')) {
-            return '0x08000000';
-        }
-        
-        // 默认地址
-        return '0x08000000';
-    }
 }
-

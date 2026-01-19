@@ -1,15 +1,20 @@
+/**
+ * STM32 Development Tools 扩展入口
+ * 提供 STM32 开发所需的编译、烧录、调试等功能
+ */
+
 import * as vscode from 'vscode';
-import { STM32ProjectProvider } from './providers/projectProvider';
 import { CMakeBuilder } from './utils/cmakeBuilder';
 import { OpenOCDManager } from './utils/openocdManager';
 import { STM32ChipSelector } from './utils/chipSelector';
 import { DebugConfigGenerator } from './utils/debugConfigGenerator';
 import { ToolchainDetector } from './utils/toolchainDetector';
 import { ProjectDetector, selectDebugInterface, selectBuildType } from './utils/projectDetector';
-import { SerialMonitor } from './utils/serialMonitor';
+import { getSTM32Config } from './utils/config';
+import { DEBUGGER_NAMES } from './utils/chipUtils';
 
+// 全局管理器实例
 let openocdManager: OpenOCDManager | undefined;
-let serialMonitor: SerialMonitor | undefined;
 let outputChannel: vscode.OutputChannel;
 let toolchainDetector: ToolchainDetector;
 let projectDetector: ProjectDetector;
@@ -23,6 +28,9 @@ let statusBarClean: vscode.StatusBarItem;
 let statusBarFlash: vscode.StatusBarItem;
 let statusBarDebug: vscode.StatusBarItem;
 
+/**
+ * 扩展激活入口
+ */
 export function activate(context: vscode.ExtensionContext) {
     console.log('STM32 Development Tools 扩展已激活');
     
@@ -37,27 +45,50 @@ export function activate(context: vscode.ExtensionContext) {
     const debugConfigGen = new DebugConfigGenerator();
     toolchainDetector = new ToolchainDetector(outputChannel);
     projectDetector = new ProjectDetector();
-    serialMonitor = new SerialMonitor();
-    context.subscriptions.push(serialMonitor.getStatusBarItem());
     
-    // 初始化视图提供器
-    const projectProvider = new STM32ProjectProvider();
+    // 注册所有命令
+    registerCommands(context, cmakeBuilder, chipSelector, debugConfigGen);
     
-    // 注册视图
-    vscode.window.registerTreeDataProvider('stm32-project', projectProvider);
+    // 创建状态栏
+    createStatusBarItems(context);
     
-    // 注册命令: 选择芯片
+    // 首次启动时检查
+    checkAndAutoDetectToolchain(context);
+    autoDetectChipOnStartup();
+    
+    // 监听配置变化
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeConfiguration((e) => {
+            if (e.affectsConfiguration('stm32')) {
+                updateAllStatusBars();
+            }
+        })
+    );
+    
+    outputChannel.appendLine('STM32 Development Tools 已就绪');
+}
+
+/**
+ * 注册所有命令
+ */
+function registerCommands(
+    context: vscode.ExtensionContext,
+    cmakeBuilder: CMakeBuilder,
+    chipSelector: STM32ChipSelector,
+    debugConfigGen: DebugConfigGenerator
+) {
+    // 选择芯片
     context.subscriptions.push(
         vscode.commands.registerCommand('stm32.selectChip', async () => {
             const chip = await chipSelector.selectChip();
             if (chip) {
                 outputChannel.appendLine(`已选择芯片: ${chip.name}`);
-                projectProvider.refresh();
+                updateAllStatusBars();
             }
         })
     );
     
-    // 注册命令: 编译项目
+    // 编译项目
     context.subscriptions.push(
         vscode.commands.registerCommand('stm32.build', async () => {
             outputChannel.show();
@@ -71,7 +102,7 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
     
-    // 注册命令: 清理项目
+    // 清理项目
     context.subscriptions.push(
         vscode.commands.registerCommand('stm32.clean', async () => {
             outputChannel.show();
@@ -85,7 +116,7 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
     
-    // 注册命令: 重新编译
+    // 重新编译
     context.subscriptions.push(
         vscode.commands.registerCommand('stm32.rebuild', async () => {
             outputChannel.show();
@@ -99,20 +130,20 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // 注册命令: 生成 BIN/HEX 文件
+    // 生成 BIN/HEX 文件
     context.subscriptions.push(
         vscode.commands.registerCommand('stm32.generateBin', async () => {
             outputChannel.show();
             try {
-                const result = await cmakeBuilder.generateBinHex();
-                vscode.window.showInformationMessage(`STM32: 已生成 BIN 和 HEX 文件`);
+                await cmakeBuilder.generateBinHex();
+                vscode.window.showInformationMessage('STM32: 已生成 BIN 和 HEX 文件');
             } catch (error) {
                 vscode.window.showErrorMessage(`STM32: 生成失败 - ${error}`);
             }
         })
     );
     
-    // 注册命令: 下载程序
+    // 下载程序
     context.subscriptions.push(
         vscode.commands.registerCommand('stm32.flash', async () => {
             outputChannel.show();
@@ -126,7 +157,7 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
     
-    // 注册命令: 开始调试 (使用 Cortex-Debug)
+    // 开始调试
     context.subscriptions.push(
         vscode.commands.registerCommand('stm32.debug', async () => {
             try {
@@ -162,7 +193,7 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
     
-    // 注册命令: 启动 OpenOCD
+    // 启动 OpenOCD
     context.subscriptions.push(
         vscode.commands.registerCommand('stm32.openocdStart', async () => {
             outputChannel.show();
@@ -175,7 +206,7 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
     
-    // 注册命令: 停止 OpenOCD
+    // 停止 OpenOCD
     context.subscriptions.push(
         vscode.commands.registerCommand('stm32.openocdStop', async () => {
             openocdManager!.stop();
@@ -183,7 +214,7 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
     
-    // 注册命令: 生成调试配置
+    // 生成调试配置
     context.subscriptions.push(
         vscode.commands.registerCommand('stm32.generateLaunchConfig', async () => {
             try {
@@ -195,52 +226,50 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
     
-    // 注册命令: 自动检测工具链
+    // 自动检测工具链
     context.subscriptions.push(
         vscode.commands.registerCommand('stm32.detectToolchain', async () => {
             outputChannel.show();
             await toolchainDetector.showDetectionResultsAndApply();
-            projectProvider.refresh();
+            updateAllStatusBars();
         })
     );
 
-    // 注册命令: 快速自动检测（静默模式）
+    // 快速自动检测（静默模式）
     context.subscriptions.push(
         vscode.commands.registerCommand('stm32.autoDetectToolchain', async () => {
             const tools = await toolchainDetector.detectAll();
             if (tools.gccPath || tools.openocdPath) {
                 await toolchainDetector.applyDetectedTools(tools);
                 outputChannel.appendLine('工具链已自动配置');
-                projectProvider.refresh();
+                updateAllStatusBars();
             }
         })
     );
 
-    // 注册命令: 选择调试器
+    // 选择调试器
     context.subscriptions.push(
         vscode.commands.registerCommand('stm32.selectDebugger', async () => {
             const debugger_ = await selectDebugInterface();
             if (debugger_) {
                 outputChannel.appendLine(`已选择调试器: ${debugger_}`);
                 updateAllStatusBars();
-                projectProvider.refresh();
             }
         })
     );
 
-    // 注册命令: 选择构建类型
+    // 选择构建类型
     context.subscriptions.push(
         vscode.commands.registerCommand('stm32.selectBuildType', async () => {
             const buildType = await selectBuildType();
             if (buildType) {
                 outputChannel.appendLine(`已选择构建类型: ${buildType}`);
                 updateAllStatusBars();
-                projectProvider.refresh();
             }
         })
     );
 
-    // 注册命令: 自动检测芯片
+    // 自动检测芯片
     context.subscriptions.push(
         vscode.commands.registerCommand('stm32.autoDetectChip', async () => {
             outputChannel.show();
@@ -252,73 +281,39 @@ export function activate(context: vscode.ExtensionContext) {
                 outputChannel.appendLine(`检测到芯片: ${info.chipName} (${info.chipFamily})`);
                 vscode.window.showInformationMessage(`STM32: 检测到芯片 ${info.chipName}`);
                 updateAllStatusBars();
-                projectProvider.refresh();
             } else {
                 outputChannel.appendLine('未能自动检测芯片型号');
                 vscode.window.showWarningMessage('STM32: 未能自动检测芯片型号，请手动选择');
             }
         })
     );
+}
 
-    // ============ 串口监视器命令 ============
-    context.subscriptions.push(
-        vscode.commands.registerCommand('stm32.serial.toggle', async () => {
-            await serialMonitor!.toggle();
-        })
-    );
-
-    context.subscriptions.push(
-        vscode.commands.registerCommand('stm32.serial.connect', async () => {
-            await serialMonitor!.connect();
-        })
-    );
-
-    context.subscriptions.push(
-        vscode.commands.registerCommand('stm32.serial.disconnect', async () => {
-            await serialMonitor!.disconnect();
-            vscode.window.showInformationMessage('串口已断开');
-        })
-    );
-
-    context.subscriptions.push(
-        vscode.commands.registerCommand('stm32.serial.send', async () => {
-            await serialMonitor!.send();
-        })
-    );
-
-    context.subscriptions.push(
-        vscode.commands.registerCommand('stm32.serial.show', () => {
-            serialMonitor!.show();
-        })
-    );
-
-    // 首次启动时检查是否需要自动检测工具链和芯片
-    checkAndAutoDetectToolchain(context);
-    autoDetectChipOnStartup();
-    
-    // ============ 状态栏配置项 ============
-    // 状态栏项目 - 芯片
+/**
+ * 创建状态栏项目
+ */
+function createStatusBarItems(context: vscode.ExtensionContext) {
+    // 芯片选择
     statusBarChip = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 103);
     statusBarChip.command = 'stm32.selectChip';
     statusBarChip.tooltip = '点击选择 STM32 芯片型号';
     statusBarChip.show();
     context.subscriptions.push(statusBarChip);
 
-    // 状态栏项目 - 调试器
+    // 调试器选择
     statusBarDebugger = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 102);
     statusBarDebugger.command = 'stm32.selectDebugger';
     statusBarDebugger.tooltip = '点击选择调试器类型';
     statusBarDebugger.show();
     context.subscriptions.push(statusBarDebugger);
 
-    // 状态栏项目 - 构建类型
+    // 构建类型
     statusBarBuildType = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 101);
     statusBarBuildType.command = 'stm32.selectBuildType';
     statusBarBuildType.tooltip = '点击选择构建类型';
     statusBarBuildType.show();
     context.subscriptions.push(statusBarBuildType);
 
-    // ============ 状态栏操作按钮 ============
     // 编译按钮
     statusBarBuild = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 98);
     statusBarBuild.text = '$(tools) 编译';
@@ -351,63 +346,43 @@ export function activate(context: vscode.ExtensionContext) {
     statusBarDebug.show();
     context.subscriptions.push(statusBarDebug);
 
-    // 初始化状态栏
+    // 初始化状态栏显示
     updateAllStatusBars();
-    
-    // 监听配置变化
-    context.subscriptions.push(
-        vscode.workspace.onDidChangeConfiguration((e) => {
-            if (e.affectsConfiguration('stm32')) {
-                updateAllStatusBars();
-                projectProvider.refresh();
-            }
-        })
-    );
-    
-    outputChannel.appendLine('STM32 Development Tools 已就绪');
 }
 
+/**
+ * 更新所有状态栏显示
+ */
 function updateAllStatusBars() {
-    const config = vscode.workspace.getConfiguration('stm32');
+    const config = getSTM32Config();
     
     // 芯片
-    const chip = config.get<string>('selectedChip');
-    if (chip) {
-        statusBarChip.text = `$(circuit-board) ${chip}`;
+    if (config.selectedChip) {
+        statusBarChip.text = `$(circuit-board) ${config.selectedChip}`;
     } else {
         statusBarChip.text = '$(circuit-board) 选择芯片';
     }
 
     // 调试器
-    const debugInterface = config.get<string>('debugInterface') || 'stlink';
-    const debuggerNames: Record<string, string> = {
-        'stlink': 'ST-Link',
-        'stlink-v2': 'ST-Link V2',
-        'stlink-v2-1': 'ST-Link V2-1',
-        'stlink-v3': 'ST-Link V3',
-        'jlink': 'J-Link',
-        'cmsis-dap': 'CMSIS-DAP'
-    };
-    statusBarDebugger.text = `$(plug) ${debuggerNames[debugInterface] || debugInterface}`;
+    const debuggerName = DEBUGGER_NAMES[config.debugInterface] || config.debugInterface;
+    statusBarDebugger.text = `$(plug) ${debuggerName}`;
 
     // 构建类型
-    const buildType = config.get<string>('buildType') || 'Debug';
-    const buildIcon = buildType === 'Debug' ? '$(bug)' : '$(package)';
-    statusBarBuildType.text = `${buildIcon} ${buildType}`;
+    const buildIcon = config.buildType === 'Debug' ? '$(bug)' : '$(package)';
+    statusBarBuildType.text = `${buildIcon} ${config.buildType}`;
 }
 
 /**
  * 启动时自动检测芯片
  */
 async function autoDetectChipOnStartup() {
-    const config = vscode.workspace.getConfiguration('stm32');
-    const currentChip = config.get<string>('selectedChip');
+    const config = getSTM32Config();
+    const currentChip = config.selectedChip;
     
     // 尝试从项目文件检测芯片
     const detectedInfo = await projectDetector.detectChip();
     
     if (!detectedInfo.chipName) {
-        // 无法自动检测
         if (!currentChip) {
             outputChannel.appendLine('未能自动检测芯片型号，请手动选择');
         }
@@ -418,7 +393,8 @@ async function autoDetectChipOnStartup() {
 
     if (!currentChip) {
         // 芯片未配置，直接使用检测到的
-        await config.update('selectedChip', detectedChip, vscode.ConfigurationTarget.Workspace);
+        const stm32Config = vscode.workspace.getConfiguration('stm32');
+        await stm32Config.update('selectedChip', detectedChip, vscode.ConfigurationTarget.Workspace);
         outputChannel.appendLine(`自动检测到芯片: ${detectedChip} (来源: 项目文件)`);
         updateAllStatusBars();
     } else if (currentChip.toUpperCase() !== detectedChip.toUpperCase()) {
@@ -434,15 +410,14 @@ async function autoDetectChipOnStartup() {
         );
 
         if (choice?.startsWith('使用检测到的')) {
-            await config.update('selectedChip', detectedChip, vscode.ConfigurationTarget.Workspace);
+            const stm32Config = vscode.workspace.getConfiguration('stm32');
+            await stm32Config.update('selectedChip', detectedChip, vscode.ConfigurationTarget.Workspace);
             outputChannel.appendLine(`已更新芯片配置为: ${detectedChip}`);
             updateAllStatusBars();
         } else if (choice === '手动选择') {
             await vscode.commands.executeCommand('stm32.selectChip');
         }
-        // 保留当前配置则不做任何操作
     } else {
-        // 配置一致
         outputChannel.appendLine(`芯片配置验证通过: ${currentChip}`);
     }
 }
@@ -451,12 +426,10 @@ async function autoDetectChipOnStartup() {
  * 检查是否需要自动检测工具链
  */
 async function checkAndAutoDetectToolchain(context: vscode.ExtensionContext) {
-    const config = vscode.workspace.getConfiguration('stm32');
-    const toolchainPath = config.get<string>('toolchainPath');
-    const openocdPath = config.get<string>('openocdPath');
+    const config = getSTM32Config();
     
     // 如果工具链路径未配置，询问是否自动检测
-    if (!toolchainPath && !openocdPath) {
+    if (!config.toolchainPath && !config.openocdPath) {
         const hasPrompted = context.globalState.get<boolean>('stm32.toolchainPrompted');
         
         if (!hasPrompted) {
@@ -479,9 +452,11 @@ async function checkAndAutoDetectToolchain(context: vscode.ExtensionContext) {
     }
 }
 
+/**
+ * 扩展停用
+ */
 export function deactivate() {
     if (openocdManager) {
         openocdManager.stop();
     }
 }
-

@@ -1,6 +1,13 @@
+/**
+ * CMake 构建管理器
+ * 负责项目的配置、编译、清理等操作
+ */
+
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
+import { getSTM32Config, getWorkspaceFolder } from './config';
+import { quotePath } from './chipUtils';
 
 export class CMakeBuilder {
     private outputChannel: vscode.OutputChannel;
@@ -57,50 +64,31 @@ export class CMakeBuilder {
         }
     }
 
-    private getConfig() {
-        const config = vscode.workspace.getConfiguration('stm32');
-        return {
-            cmakePath: config.get<string>('cmakePath') || 'cmake',
-            toolchainPath: config.get<string>('toolchainPath') || '',
-            buildType: config.get<string>('buildType') || 'Debug',
-            buildDirectory: config.get<string>('buildDirectory') || 'build'
-        };
-    }
-
-    private getWorkspaceFolder(): string {
-        const folders = vscode.workspace.workspaceFolders;
-        if (!folders || folders.length === 0) {
-            throw new Error('没有打开工作区文件夹');
-        }
-        return folders[0].uri.fsPath;
-    }
-
+    /**
+     * 配置 CMake 项目
+     */
     async configure(): Promise<void> {
         // 优先使用 CMake Tools 扩展
         if (this.isCMakeToolsInstalled()) {
             return this.configureWithCMakeTools();
         }
 
-        const config = this.getConfig();
-        const workspaceFolder = this.getWorkspaceFolder();
+        const config = getSTM32Config();
+        const workspaceFolder = getWorkspaceFolder();
         const buildDir = path.join(workspaceFolder, config.buildDirectory);
 
-        this.outputChannel.appendLine(`配置 CMake 项目...`);
+        this.outputChannel.appendLine('配置 CMake 项目...');
         this.outputChannel.appendLine(`构建目录: ${buildDir}`);
         this.outputChannel.appendLine(`构建类型: ${config.buildType}`);
 
-        // 检查项目是否有 CMakePresets.json 或 CMakeUserPresets.json
         const hasPresets = await this.hasProjectPresets(workspaceFolder);
         
         if (hasPresets) {
-            this.outputChannel.appendLine(`检测到 CMakePresets.json，使用项目配置...`);
-            const args = [
-                '--preset', config.buildType.toLowerCase(),
-            ];
+            this.outputChannel.appendLine('检测到 CMakePresets.json，使用项目配置...');
+            const args = ['--preset', config.buildType.toLowerCase()];
             return this.runCMake(args, workspaceFolder);
         }
 
-        // 没有 presets，使用我们的配置
         const args = [
             '-S', workspaceFolder,
             '-B', buildDir,
@@ -126,6 +114,9 @@ export class CMakeBuilder {
         return this.runCMake(args, workspaceFolder);
     }
 
+    /**
+     * 检查项目是否有 CMakePresets
+     */
     private async hasProjectPresets(workspaceFolder: string): Promise<boolean> {
         const presetsFile = path.join(workspaceFolder, 'CMakePresets.json');
         const userPresetsFile = path.join(workspaceFolder, 'CMakeUserPresets.json');
@@ -143,14 +134,17 @@ export class CMakeBuilder {
         }
     }
 
+    /**
+     * 构建项目
+     */
     async build(): Promise<void> {
         // 优先使用 CMake Tools 扩展
         if (this.isCMakeToolsInstalled()) {
             return this.buildWithCMakeTools();
         }
 
-        const config = this.getConfig();
-        const workspaceFolder = this.getWorkspaceFolder();
+        const config = getSTM32Config();
+        const workspaceFolder = getWorkspaceFolder();
         const buildDir = path.join(workspaceFolder, config.buildDirectory);
         const hasPresets = await this.hasProjectPresets(workspaceFolder);
 
@@ -176,7 +170,7 @@ export class CMakeBuilder {
             await this.configure();
         }
 
-        this.outputChannel.appendLine(`开始编译...`);
+        this.outputChannel.appendLine('开始编译...');
 
         let args: string[];
         if (hasPresets) {
@@ -196,17 +190,20 @@ export class CMakeBuilder {
         return this.runCMake(args, workspaceFolder);
     }
 
+    /**
+     * 清理项目
+     */
     async clean(): Promise<void> {
         // 优先使用 CMake Tools 扩展
         if (this.isCMakeToolsInstalled()) {
             return this.cleanWithCMakeTools();
         }
 
-        const config = this.getConfig();
-        const workspaceFolder = this.getWorkspaceFolder();
+        const config = getSTM32Config();
+        const workspaceFolder = getWorkspaceFolder();
         const buildDir = path.join(workspaceFolder, config.buildDirectory);
 
-        this.outputChannel.appendLine(`清理构建目录...`);
+        this.outputChannel.appendLine('清理构建目录...');
 
         const args = [
             '--build', buildDir,
@@ -226,19 +223,24 @@ export class CMakeBuilder {
         }
     }
 
+    /**
+     * 重新编译
+     */
     async rebuild(): Promise<void> {
         await this.clean();
         await this.configure();
         await this.build();
     }
 
+    /**
+     * 执行 CMake 命令
+     */
     private runCMake(args: string[], cwd: string): Promise<void> {
-        const config = this.getConfig();
+        const config = getSTM32Config();
         
         return new Promise((resolve, reject) => {
-            // 对路径加引号以处理空格
-            const cmakePath = this.quotePath(config.cmakePath);
-            const quotedArgs = args.map(arg => this.quotePath(arg));
+            const cmakePath = quotePath(config.cmakePath);
+            const quotedArgs = args.map(arg => quotePath(arg));
             
             this.outputChannel.appendLine(`执行: ${cmakePath} ${quotedArgs.join(' ')}`);
 
@@ -289,8 +291,11 @@ export class CMakeBuilder {
         });
     }
 
+    /**
+     * 构建工具链 PATH
+     */
     private buildToolchainPath(): string {
-        const config = this.getConfig();
+        const config = getSTM32Config();
         let pathEnv = process.env.PATH || '';
         
         if (config.toolchainPath) {
@@ -301,20 +306,8 @@ export class CMakeBuilder {
     }
 
     /**
-     * 给包含空格的路径加上引号
+     * 取消编译
      */
-    private quotePath(p: string): string {
-        // 如果已经包含引号（如 -DCMAKE_C_COMPILER="path"），不再处理
-        if (p.includes('"')) {
-            return p;
-        }
-        // 如果路径包含空格且没有被引号包围，添加引号
-        if (p.includes(' ') && !p.startsWith('"') && !p.startsWith("'")) {
-            return `"${p}"`;
-        }
-        return p;
-    }
-
     cancelBuild(): void {
         if (this.buildProcess) {
             this.buildProcess.kill();
@@ -324,17 +317,17 @@ export class CMakeBuilder {
     }
 
     /**
-     * 将 ELF 文件转换为 BIN 和 HEX 格式
+     * 生成 BIN/HEX 文件
      */
     async generateBinHex(): Promise<{ bin?: string; hex?: string }> {
-        const config = this.getConfig();
+        const config = getSTM32Config();
         const elfFile = await this.getElfFile();
         
         if (!elfFile) {
             throw new Error('找不到 ELF 文件，请先编译项目');
         }
 
-        this.outputChannel.appendLine(`生成 BIN/HEX 文件...`);
+        this.outputChannel.appendLine('生成 BIN/HEX 文件...');
         this.outputChannel.appendLine(`源文件: ${elfFile}`);
 
         const ext = process.platform === 'win32' ? '.exe' : '';
@@ -359,10 +352,13 @@ export class CMakeBuilder {
         return { bin: binFile, hex: hexFile };
     }
 
+    /**
+     * 执行 objcopy 命令
+     */
     private runObjcopy(objcopyPath: string, args: string[]): Promise<void> {
         return new Promise((resolve, reject) => {
-            const quotedPath = this.quotePath(objcopyPath);
-            const quotedArgs = args.map(arg => this.quotePath(arg));
+            const quotedPath = quotePath(objcopyPath);
+            const quotedArgs = args.map(arg => quotePath(arg));
             
             const objcopyProcess = spawn(quotedPath, quotedArgs, {
                 shell: true,
@@ -390,18 +386,20 @@ export class CMakeBuilder {
         });
     }
 
+    /**
+     * 获取 ELF 文件
+     */
     async getElfFile(): Promise<string | undefined> {
-        const config = this.getConfig();
-        const workspaceFolder = this.getWorkspaceFolder();
+        const config = getSTM32Config();
+        const workspaceFolder = getWorkspaceFolder();
         
         // 尝试多个可能的构建目录
         const possibleBuildDirs = [
             path.join(workspaceFolder, config.buildDirectory),
-            path.join(workspaceFolder, 'build', config.buildType),  // preset 风格
+            path.join(workspaceFolder, 'build', config.buildType),
             path.join(workspaceFolder, 'build'),
         ];
 
-        // 查找 .elf 文件
         try {
             let allFiles: vscode.Uri[] = [];
             for (const buildDir of possibleBuildDirs) {
@@ -412,18 +410,17 @@ export class CMakeBuilder {
                 );
                 allFiles = allFiles.concat(files);
             }
-            const files = allFiles;
 
-            if (files.length === 0) {
+            if (allFiles.length === 0) {
                 return undefined;
             }
 
-            if (files.length === 1) {
-                return files[0].fsPath;
+            if (allFiles.length === 1) {
+                return allFiles[0].fsPath;
             }
 
             // 多个 elf 文件，让用户选择
-            const items = files.map(f => ({
+            const items = allFiles.map(f => ({
                 label: path.basename(f.fsPath),
                 description: f.fsPath,
                 path: f.fsPath
@@ -439,4 +436,3 @@ export class CMakeBuilder {
         }
     }
 }
-
