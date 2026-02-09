@@ -39,6 +39,27 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "stm32-sidebar",
+          "title": "STM32 Development",
+          "icon": "resources/stm32-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "stm32-sidebar": [
+        {
+          "id": "stm32-project",
+          "name": "项目信息"
+        },
+        {
+          "id": "stm32-actions",
+          "name": "操作"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "stm32.selectChip",
@@ -125,17 +146,51 @@
     ],
     "menus": {
       "commandPalette": [
+        { "command": "stm32.selectChip" },
+        { "command": "stm32.build" },
+        { "command": "stm32.flash" },
+        { "command": "stm32.debug" }
+      ],
+      "editor/title": [
         {
-          "command": "stm32.selectChip"
+          "command": "stm32.build",
+          "group": "navigation@1"
         },
         {
-          "command": "stm32.build"
+          "command": "stm32.flash",
+          "group": "navigation@2"
         },
         {
-          "command": "stm32.flash"
+          "command": "stm32.debug",
+          "group": "navigation@3"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "stm32.build",
+          "group": "stm32@1"
         },
         {
-          "command": "stm32.debug"
+          "command": "stm32.flash",
+          "group": "stm32@2"
+        },
+        {
+          "command": "stm32.debug",
+          "group": "stm32@3"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "stm32.build",
+          "group": "stm32@1"
+        },
+        {
+          "command": "stm32.flash",
+          "group": "stm32@2"
+        },
+        {
+          "command": "stm32.debug",
+          "group": "stm32@3"
         }
       ]
     },
@@ -161,6 +216,11 @@
           "type": "string",
           "default": "cmake",
           "description": "CMake 可执行文件路径"
+        },
+        "stm32.ninjaPath": {
+          "type": "string",
+          "default": "",
+          "description": "Ninja 构建工具路径"
         },
         "stm32.selectedChip": {
           "type": "string",

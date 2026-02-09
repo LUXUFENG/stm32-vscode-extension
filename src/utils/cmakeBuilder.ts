@@ -96,6 +96,10 @@ export class CMakeBuilder {
             '-G', 'Ninja'
         ];
 
+        if (config.ninjaPath) {
+            args.push(`-DCMAKE_MAKE_PROGRAM=${config.ninjaPath}`);
+        }
+
         // 如果指定了工具链路径，添加交叉编译参数
         if (config.toolchainPath) {
             const ext = process.platform === 'win32' ? '.exe' : '';
@@ -297,11 +301,19 @@ export class CMakeBuilder {
     private buildToolchainPath(): string {
         const config = getSTM32Config();
         let pathEnv = process.env.PATH || '';
-        
+
         if (config.toolchainPath) {
             pathEnv = `${config.toolchainPath}${path.delimiter}${pathEnv}`;
         }
-        
+
+        if (config.cmakePath && config.cmakePath !== 'cmake') {
+            pathEnv = `${path.dirname(config.cmakePath)}${path.delimiter}${pathEnv}`;
+        }
+
+        if (config.ninjaPath) {
+            pathEnv = `${path.dirname(config.ninjaPath)}${path.delimiter}${pathEnv}`;
+        }
+
         return pathEnv;
     }
 

@@ -8,6 +8,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { execSync } from 'child_process';
 import { updateSTM32ConfigBatch } from './config';
+import { ToolchainInstaller, ToolName, getMissingTools, getToolDisplayName } from './toolchainInstaller';
 
 export interface DetectedTools {
     gccPath?: string;
@@ -21,9 +22,16 @@ export interface DetectedTools {
 
 export class ToolchainDetector {
     private outputChannel: vscode.OutputChannel;
+    private installer?: ToolchainInstaller;
+    private toolsDir?: string;
 
     constructor(outputChannel?: vscode.OutputChannel) {
         this.outputChannel = outputChannel || vscode.window.createOutputChannel('STM32 Toolchain');
+    }
+
+    setInstaller(installer: ToolchainInstaller): void {
+        this.installer = installer;
+        this.toolsDir = installer.toolsDir;
     }
 
     private log(message: string): void {
@@ -37,44 +45,77 @@ export class ToolchainDetector {
         this.log('开始自动检测工具链...');
         
         const tools: DetectedTools = {};
+        const ext = process.platform === 'win32' ? '.exe' : '';
 
-        // 检测 GCC ARM
-        const gccResult = await this.detectGccArm();
-        if (gccResult) {
-            tools.gccPath = gccResult.path;
-            tools.gccVersion = gccResult.version;
-            this.log(`✓ 找到 GCC ARM: ${gccResult.path} (${gccResult.version})`);
-        } else {
-            this.log('✗ 未找到 GCC ARM 工具链');
+        // 优先检查扩展已安装的工具
+        if (this.toolsDir) {
+            const gccBin = path.join(this.toolsDir, 'gcc-arm', 'bin', `arm-none-eabi-gcc${ext}`);
+            if (fs.existsSync(gccBin)) {
+                tools.gccPath = path.dirname(gccBin);
+                tools.gccVersion = this.getGccVersion(gccBin);
+                this.log(`✓ 找到 GCC ARM (扩展安装): ${tools.gccPath} (${tools.gccVersion})`);
+            }
+            const openocdBin = path.join(this.toolsDir, 'openocd', 'bin', `openocd${ext}`);
+            if (fs.existsSync(openocdBin)) {
+                tools.openocdPath = openocdBin;
+                tools.openocdScriptsPath = this.findOpenOCDScripts(path.join(this.toolsDir, 'openocd'));
+                tools.openocdVersion = this.getOpenOCDVersion(openocdBin);
+                this.log(`✓ 找到 OpenOCD (扩展安装): ${openocdBin} (${tools.openocdVersion})`);
+            }
+            const cmakeBin = path.join(this.toolsDir, 'cmake', 'bin', `cmake${ext}`);
+            if (fs.existsSync(cmakeBin)) {
+                tools.cmakePath = cmakeBin;
+                this.log(`✓ 找到 CMake (扩展安装): ${cmakeBin}`);
+            }
+            const ninjaBin = path.join(this.toolsDir, 'ninja', `ninja${ext}`);
+            if (fs.existsSync(ninjaBin)) {
+                tools.ninjaPath = ninjaBin;
+                this.log(`✓ 找到 Ninja (扩展安装): ${ninjaBin}`);
+            }
         }
 
-        // 检测 OpenOCD
-        const openocdResult = await this.detectOpenOCD();
-        if (openocdResult) {
-            tools.openocdPath = openocdResult.path;
-            tools.openocdScriptsPath = openocdResult.scriptsPath;
-            tools.openocdVersion = openocdResult.version;
-            this.log(`✓ 找到 OpenOCD: ${openocdResult.path} (${openocdResult.version})`);
-        } else {
-            this.log('✗ 未找到 OpenOCD');
+        // 对未找到的工具，继续搜索系统
+        if (!tools.gccPath) {
+            const gccResult = await this.detectGccArm();
+            if (gccResult) {
+                tools.gccPath = gccResult.path;
+                tools.gccVersion = gccResult.version;
+                this.log(`✓ 找到 GCC ARM: ${gccResult.path} (${gccResult.version})`);
+            } else {
+                this.log('✗ 未找到 GCC ARM 工具链');
+            }
         }
 
-        // 检测 CMake
-        const cmakeResult = await this.detectCMake();
-        if (cmakeResult) {
-            tools.cmakePath = cmakeResult.path;
-            this.log(`✓ 找到 CMake: ${cmakeResult.path} (${cmakeResult.version})`);
-        } else {
-            this.log('✗ 未找到 CMake');
+        if (!tools.openocdPath) {
+            const openocdResult = await this.detectOpenOCD();
+            if (openocdResult) {
+                tools.openocdPath = openocdResult.path;
+                tools.openocdScriptsPath = openocdResult.scriptsPath;
+                tools.openocdVersion = openocdResult.version;
+                this.log(`✓ 找到 OpenOCD: ${openocdResult.path} (${openocdResult.version})`);
+            } else {
+                this.log('✗ 未找到 OpenOCD');
+            }
         }
 
-        // 检测 Ninja
-        const ninjaResult = await this.detectNinja();
-        if (ninjaResult) {
-            tools.ninjaPath = ninjaResult.path;
-            this.log(`✓ 找到 Ninja: ${ninjaResult.path} (${ninjaResult.version})`);
-        } else {
-            this.log('✗ 未找到 Ninja');
+        if (!tools.cmakePath) {
+            const cmakeResult = await this.detectCMake();
+            if (cmakeResult) {
+                tools.cmakePath = cmakeResult.path;
+                this.log(`✓ 找到 CMake: ${cmakeResult.path} (${cmakeResult.version})`);
+            } else {
+                this.log('✗ 未找到 CMake');
+            }
+        }
+
+        if (!tools.ninjaPath) {
+            const ninjaResult = await this.detectNinja();
+            if (ninjaResult) {
+                tools.ninjaPath = ninjaResult.path;
+                this.log(`✓ 找到 Ninja: ${ninjaResult.path} (${ninjaResult.version})`);
+            } else {
+                this.log('✗ 未找到 Ninja');
+            }
         }
 
         this.log('工具链检测完成');
@@ -491,8 +532,40 @@ export class ToolchainDetector {
             toolchainPath: tools.gccPath,
             openocdPath: tools.openocdPath,
             openocdScriptsPath: tools.openocdScriptsPath,
-            cmakePath: tools.cmakePath
+            cmakePath: tools.cmakePath,
+            ninjaPath: tools.ninjaPath
         }, vscode.ConfigurationTarget.Global);
+
+        const cmakeToolsConfig = vscode.workspace.getConfiguration('cmake');
+
+        if (tools.cmakePath) {
+            const current = cmakeToolsConfig.get<string>('cmakePath');
+            if (!current || current === 'cmake') {
+                await cmakeToolsConfig.update('cmakePath', tools.cmakePath, vscode.ConfigurationTarget.Global);
+                this.log(`已同步设置 cmake.cmakePath = ${tools.cmakePath}`);
+            }
+        }
+
+        if (tools.ninjaPath) {
+            const ninjaArg = `-DCMAKE_MAKE_PROGRAM=${tools.ninjaPath}`;
+            const configureArgs = cmakeToolsConfig.get<string[]>('configureArgs') || [];
+            const filtered = configureArgs.filter(a => !a.startsWith('-DCMAKE_MAKE_PROGRAM='));
+            filtered.push(ninjaArg);
+            await cmakeToolsConfig.update('configureArgs', filtered, vscode.ConfigurationTarget.Global);
+            this.log(`已同步设置 cmake.configureArgs: ${ninjaArg}`);
+        }
+
+        const extraPaths: string[] = [];
+        if (tools.gccPath) { extraPaths.push(tools.gccPath); }
+        if (tools.ninjaPath) { extraPaths.push(path.dirname(tools.ninjaPath)); }
+        if (tools.cmakePath) { extraPaths.push(path.dirname(tools.cmakePath)); }
+
+        if (extraPaths.length > 0) {
+            const cmakeEnv = cmakeToolsConfig.get<Record<string, string>>('environment') || {};
+            cmakeEnv['PATH'] = [...extraPaths, process.env.PATH || ''].join(path.delimiter);
+            await cmakeToolsConfig.update('environment', cmakeEnv, vscode.ConfigurationTarget.Global);
+            this.log(`已同步设置 cmake.environment.PATH`);
+        }
     }
 
     /**
@@ -500,56 +573,70 @@ export class ToolchainDetector {
      */
     async showDetectionResultsAndApply(): Promise<void> {
         this.outputChannel.show();
-        
+
         const tools = await this.detectAll();
+        const missing = getMissingTools(tools);
 
         const foundTools: string[] = [];
-        const missingTools: string[] = [];
+        const missingNames: string[] = [];
 
         if (tools.gccPath) {
             foundTools.push(`GCC ARM: ${tools.gccPath} (v${tools.gccVersion})`);
         } else {
-            missingTools.push('GCC ARM');
+            missingNames.push('GCC ARM');
         }
-
         if (tools.openocdPath) {
             foundTools.push(`OpenOCD: ${tools.openocdPath} (v${tools.openocdVersion})`);
         } else {
-            missingTools.push('OpenOCD');
+            missingNames.push('OpenOCD');
         }
-
         if (tools.cmakePath) {
             foundTools.push(`CMake: ${tools.cmakePath}`);
         } else {
-            missingTools.push('CMake');
+            missingNames.push('CMake');
         }
-
         if (tools.ninjaPath) {
             foundTools.push(`Ninja: ${tools.ninjaPath}`);
         } else {
-            missingTools.push('Ninja');
+            missingNames.push('Ninja');
+        }
+
+        if (missing.length === 0) {
+            await this.applyDetectedTools(tools);
+            vscode.window.showInformationMessage('所有工具已找到，配置已更新！');
+            return;
         }
 
         let message = '';
         if (foundTools.length > 0) {
-            message = `找到以下工具:\n${foundTools.join('\n')}`;
-            if (missingTools.length > 0) {
-                message += `\n\n未找到: ${missingTools.join(', ')}`;
-            }
+            message = `找到: ${foundTools.join(', ')}\n未找到: ${missingNames.join(', ')}`;
         } else {
-            message = '未找到任何工具，请手动配置。';
-            vscode.window.showWarningMessage(message);
-            return;
+            message = `未找到任何工具: ${missingNames.join(', ')}`;
         }
 
+        const options: string[] = [];
+        if (this.installer) {
+            options.push('自动安装缺失工具');
+        }
+        if (foundTools.length > 0) {
+            options.push('仅应用已找到的');
+        }
+        options.push('取消');
+
         const choice = await vscode.window.showInformationMessage(
-            `${message}\n\n是否应用这些配置?`,
+            message,
             { modal: true },
-            '应用配置',
-            '取消'
+            ...options
         );
 
-        if (choice === '应用配置') {
+        if (choice === '自动安装缺失工具' && this.installer) {
+            if (foundTools.length > 0) {
+                await this.applyDetectedTools(tools);
+            }
+            const installed = await this.installer.installMissing(missing);
+            await this.applyDetectedTools(installed);
+            vscode.window.showInformationMessage('工具链安装完成！');
+        } else if (choice === '仅应用已找到的') {
             await this.applyDetectedTools(tools);
             vscode.window.showInformationMessage('工具链配置已更新！');
         }

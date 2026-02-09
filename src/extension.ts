@@ -9,14 +9,17 @@ import { OpenOCDManager } from './utils/openocdManager';
 import { STM32ChipSelector } from './utils/chipSelector';
 import { DebugConfigGenerator } from './utils/debugConfigGenerator';
 import { ToolchainDetector } from './utils/toolchainDetector';
+import { ToolchainInstaller, getMissingTools, getToolDisplayName } from './utils/toolchainInstaller';
 import { ProjectDetector, selectDebugInterface, selectBuildType } from './utils/projectDetector';
 import { getSTM32Config } from './utils/config';
 import { DEBUGGER_NAMES } from './utils/chipUtils';
+import { ProjectInfoProvider, ActionsProvider } from './providers/sidebarProvider';
 
 // 全局管理器实例
 let openocdManager: OpenOCDManager | undefined;
 let outputChannel: vscode.OutputChannel;
 let toolchainDetector: ToolchainDetector;
+let toolchainInstaller: ToolchainInstaller;
 let projectDetector: ProjectDetector;
 
 // 状态栏项目
@@ -44,6 +47,8 @@ export function activate(context: vscode.ExtensionContext) {
     const chipSelector = new STM32ChipSelector(context);
     const debugConfigGen = new DebugConfigGenerator();
     toolchainDetector = new ToolchainDetector(outputChannel);
+    toolchainInstaller = new ToolchainInstaller(context.globalStorageUri.fsPath, outputChannel);
+    toolchainDetector.setInstaller(toolchainInstaller);
     projectDetector = new ProjectDetector();
     
     // 注册所有命令
@@ -51,6 +56,14 @@ export function activate(context: vscode.ExtensionContext) {
     
     // 创建状态栏
     createStatusBarItems(context);
+
+    // 注册侧栏 TreeView
+    const projectInfoProvider = new ProjectInfoProvider();
+    const actionsProvider = new ActionsProvider();
+    context.subscriptions.push(
+        vscode.window.registerTreeDataProvider('stm32-project', projectInfoProvider),
+        vscode.window.registerTreeDataProvider('stm32-actions', actionsProvider)
+    );
     
     // 首次启动时检查
     checkAndAutoDetectToolchain(context);
@@ -61,9 +74,12 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.workspace.onDidChangeConfiguration((e) => {
             if (e.affectsConfiguration('stm32')) {
                 updateAllStatusBars();
+                projectInfoProvider.refresh();
             }
         })
     );
+
+
     
     outputChannel.appendLine('STM32 Development Tools 已就绪');
 }
@@ -422,33 +438,126 @@ async function autoDetectChipOnStartup() {
     }
 }
 
+
+/**
+ * 同步 stm32.* 配置到 CMake Tools 扩展设置
+ */
+async function syncCMakeToolsSettings() {
+    const config = getSTM32Config();
+    const path = require('path');
+    const cmakeToolsConfig = vscode.workspace.getConfiguration('cmake');
+
+    if (config.cmakePath && config.cmakePath !== 'cmake') {
+        const current = cmakeToolsConfig.get<string>('cmakePath');
+        if (!current || current === 'cmake') {
+            await cmakeToolsConfig.update('cmakePath', config.cmakePath, vscode.ConfigurationTarget.Global);
+        }
+    }
+
+    // 同步 ninja 路径到 cmake.configureArgs
+    if (config.ninjaPath) {
+        const ninjaArg = `-DCMAKE_MAKE_PROGRAM=${config.ninjaPath}`;
+        const configureArgs = cmakeToolsConfig.get<string[]>('configureArgs') || [];
+        const hasCorrect = configureArgs.some(a => a === ninjaArg);
+        if (!hasCorrect) {
+            const filtered = configureArgs.filter(a => !a.startsWith('-DCMAKE_MAKE_PROGRAM='));
+            filtered.push(ninjaArg);
+            await cmakeToolsConfig.update('configureArgs', filtered, vscode.ConfigurationTarget.Global);
+            outputChannel.appendLine(`已同步 cmake.configureArgs: ${ninjaArg}`);
+        }
+    }
+
+    // 同步工具链路径到 cmake.environment.PATH
+    const extraPaths: string[] = [];
+    if (config.toolchainPath) { extraPaths.push(config.toolchainPath); }
+    if (config.ninjaPath) { extraPaths.push(path.dirname(config.ninjaPath)); }
+    if (config.cmakePath && config.cmakePath !== 'cmake') { extraPaths.push(path.dirname(config.cmakePath)); }
+
+    if (extraPaths.length > 0) {
+        const cmakeEnv = cmakeToolsConfig.get<Record<string, string>>('environment') || {};
+        const systemPath = process.env.PATH || '';
+        const newPath = [...extraPaths, systemPath].join(path.delimiter);
+        if (cmakeEnv['PATH'] !== newPath) {
+            cmakeEnv['PATH'] = newPath;
+            await cmakeToolsConfig.update('environment', cmakeEnv, vscode.ConfigurationTarget.Global);
+            outputChannel.appendLine(`已同步 cmake.environment.PATH`);
+        }
+    }
+}
+
 /**
  * 检查是否需要自动检测工具链
  */
 async function checkAndAutoDetectToolchain(context: vscode.ExtensionContext) {
-    const config = getSTM32Config();
-    
-    // 如果工具链路径未配置，询问是否自动检测
-    if (!config.toolchainPath && !config.openocdPath) {
-        const hasPrompted = context.globalState.get<boolean>('stm32.toolchainPrompted');
-        
-        if (!hasPrompted) {
-            const choice = await vscode.window.showInformationMessage(
-                'STM32: 检测到工具链未配置，是否自动查找本地安装的工具？',
-                '自动查找',
-                '手动配置',
-                '不再提示'
-            );
+    // 每次启动都同步已有配置到 CMake Tools
+    await syncCMakeToolsSettings();
 
-            if (choice === '自动查找') {
-                outputChannel.show();
-                await toolchainDetector.showDetectionResultsAndApply();
-            } else if (choice === '手动配置') {
-                vscode.commands.executeCommand('workbench.action.openSettings', 'stm32');
-            } else if (choice === '不再提示') {
-                await context.globalState.update('stm32.toolchainPrompted', true);
+    const hasPrompted = context.globalState.get<boolean>('stm32.toolchainPrompted');
+    if (hasPrompted) { return; }
+
+    outputChannel.appendLine('正在检测工具链...');
+
+    const config = getSTM32Config();
+    const fs = require('fs');
+    const path = require('path');
+    const pathExists = (p: string, def?: string) => p && p !== def && fs.existsSync(p);
+
+    const tools = await toolchainDetector.detectAll();
+
+    if (pathExists(config.toolchainPath)) { tools.gccPath = config.toolchainPath; }
+    if (pathExists(config.cmakePath, 'cmake')) { tools.cmakePath = config.cmakePath; }
+    if (pathExists(config.ninjaPath)) { tools.ninjaPath = config.ninjaPath; }
+    if (pathExists(config.openocdPath, 'openocd')) { tools.openocdPath = config.openocdPath; }
+
+    if (tools.openocdPath && !tools.openocdScriptsPath) {
+        const openocdDir = path.dirname(path.dirname(tools.openocdPath));
+        const scriptsCandidates = [
+            path.join(openocdDir, 'share', 'openocd', 'scripts'),
+            path.join(openocdDir, 'openocd', 'scripts'),
+            path.join(openocdDir, 'scripts'),
+        ];
+        for (const s of scriptsCandidates) {
+            if (fs.existsSync(path.join(s, 'target'))) {
+                tools.openocdScriptsPath = s;
+                outputChannel.appendLine(`找到 OpenOCD scripts: ${s}`);
+                break;
             }
         }
+    }
+
+    const missing = getMissingTools(tools);
+
+    if (missing.length === 0) {
+        await toolchainDetector.applyDetectedTools(tools);
+        outputChannel.appendLine('工具链已配置，跳过安装');
+        updateAllStatusBars();
+        return;
+    }
+
+    const missingNames = missing.map(t => getToolDisplayName(t)).join(', ');
+    const choice = await vscode.window.showInformationMessage(
+        `STM32: 缺少开发工具: ${missingNames}`,
+        '自动安装',
+        '手动配置',
+        '不再提示'
+    );
+
+    if (choice === '自动安装') {
+        outputChannel.show();
+        if (Object.values(tools).some(v => !!v)) {
+            await toolchainDetector.applyDetectedTools(tools);
+        }
+        const installed = await toolchainInstaller.installMissing(missing);
+        if (tools.openocdScriptsPath && !installed.openocdScriptsPath) {
+            installed.openocdScriptsPath = tools.openocdScriptsPath;
+        }
+        await toolchainDetector.applyDetectedTools(installed);
+        updateAllStatusBars();
+        vscode.window.showInformationMessage('STM32: 工具链安装完成');
+    } else if (choice === '手动配置') {
+        vscode.commands.executeCommand('workbench.action.openSettings', 'stm32');
+    } else if (choice === '不再提示') {
+        await context.globalState.update('stm32.toolchainPrompted', true);
     }
 }
 

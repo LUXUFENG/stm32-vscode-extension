@@ -14,6 +14,7 @@ export interface STM32Config {
     openocdPath: string;
     openocdScriptsPath: string;
     cmakePath: string;
+    ninjaPath: string;
     
     // 项目配置
     selectedChip: string;
@@ -37,6 +38,7 @@ export function getSTM32Config(): STM32Config {
         openocdPath: config.get<string>('openocdPath') || 'openocd',
         openocdScriptsPath: config.get<string>('openocdScriptsPath') || '',
         cmakePath: config.get<string>('cmakePath') || 'cmake',
+        ninjaPath: config.get<string>('ninjaPath') || '',
         selectedChip: config.get<string>('selectedChip') || '',
         debugInterface: config.get<string>('debugInterface') || 'stlink',
         buildType: config.get<string>('buildType') || 'Debug',
