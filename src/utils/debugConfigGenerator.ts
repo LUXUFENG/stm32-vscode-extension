@@ -8,8 +8,14 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { getSTM32Config, getWorkspaceFolderSafe } from './config';
 import { getOpenOCDTarget, getInterfaceConfig, toForwardSlash } from './chipUtils';
+import { SVDResolver } from './svdResolver';
 
 export class DebugConfigGenerator {
+    private readonly svdResolver: SVDResolver;
+
+    constructor(storagePath: string, outputChannel: vscode.OutputChannel) {
+        this.svdResolver = new SVDResolver(storagePath, outputChannel);
+    }
     
     /**
      * 获取或创建调试配置
@@ -364,7 +370,7 @@ export class DebugConfigGenerator {
             : `arm-none-eabi-gdb${ext}`;
 
         const openocdScriptsPath = this.getOpenOCDScriptsPath(config.openocdPath);
-        const svdFile = config.svdFile || await this.findSvdFile(config.selectedChip);
+        const svdFile = await this.svdResolver.resolveSvdFile(config.svdFile, config.selectedChip);
         const elfPathForOpenOCD = toForwardSlash(elfFile);
 
         const debugConfig: vscode.DebugConfiguration = {
@@ -420,45 +426,6 @@ export class DebugConfigGenerator {
         }
 
         return debugConfig;
-    }
-
-    /**
-     * 自动查找 SVD 文件
-     */
-    private async findSvdFile(chipName: string): Promise<string | undefined> {
-        const workspacePath = getWorkspaceFolderSafe();
-        if (!workspacePath) {
-            return undefined;
-        }
-
-        try {
-            const svdFiles = await vscode.workspace.findFiles(
-                '**/*.svd',
-                '**/node_modules/**',
-                5
-            );
-
-            if (svdFiles.length === 1) {
-                return svdFiles[0].fsPath;
-            }
-
-            if (svdFiles.length > 1) {
-                const chipLower = chipName.toLowerCase();
-                const matchedSvd = svdFiles.find(f => {
-                    const fileName = path.basename(f.fsPath).toLowerCase();
-                    return fileName.includes(chipLower) || 
-                           chipLower.includes(fileName.replace('.svd', ''));
-                });
-                if (matchedSvd) {
-                    return matchedSvd.fsPath;
-                }
-                return svdFiles[0].fsPath;
-            }
-        } catch {
-            // 忽略错误
-        }
-
-        return undefined;
     }
 
     /**

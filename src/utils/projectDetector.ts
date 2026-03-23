@@ -16,6 +16,44 @@ export interface DetectedProjectInfo {
 }
 
 export class ProjectDetector {
+    async isSTM32OrCMakeProject(): Promise<boolean> {
+        const rootPath = getWorkspaceFolderSafe();
+        if (!rootPath) {
+            return false;
+        }
+
+        const rootMarkers = [
+            'CMakeLists.txt',
+            'CMakePresets.json'
+        ];
+
+        if (rootMarkers.some(file => fs.existsSync(path.join(rootPath, file)))) {
+            return true;
+        }
+
+        try {
+            const matches = await vscode.workspace.findFiles(
+                new vscode.RelativePattern(rootPath, '**/*.{ioc,ld,svd,s}'),
+                '**/node_modules/**',
+                20
+            );
+
+            if (matches.some(file => {
+                const name = path.basename(file.fsPath).toLowerCase();
+                return name.endsWith('.ioc') ||
+                    name.endsWith('.ld') ||
+                    name.endsWith('.svd') ||
+                    name.startsWith('startup_stm32');
+            })) {
+                return true;
+            }
+        } catch {
+            // 忽略错误
+        }
+
+        const detected = await this.detectChip();
+        return !!detected.chipName;
+    }
     
     /**
      * 自动检测项目中的芯片型号

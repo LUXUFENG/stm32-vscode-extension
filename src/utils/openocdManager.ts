@@ -37,7 +37,7 @@ export class OpenOCDManager {
 
         // 添加脚本路径
         if (config.openocdScriptsPath) {
-            args.push('-s', config.openocdScriptsPath);
+            args.push('-s', toForwardSlash(config.openocdScriptsPath));
         }
 
         // 添加接口配置
@@ -47,14 +47,11 @@ export class OpenOCDManager {
         args.push('-f', `target/${target}.cfg`);
 
         const openocdCmd = quotePath(config.openocdPath);
-        const quotedArgs = args.map(arg => quotePath(arg));
         
-        this.outputChannel.appendLine(`启动 OpenOCD: ${openocdCmd} ${quotedArgs.join(' ')}`);
+        this.outputChannel.appendLine(`启动 OpenOCD: ${quotePath(openocdCmd)} ${args.map(arg => quotePath(arg)).join(' ')}`);
 
         return new Promise((resolve, reject) => {
-            this.openocdProcess = spawn(openocdCmd, quotedArgs, {
-                shell: true
-            });
+            this.openocdProcess = spawn(openocdCmd, args);
 
             let started = false;
 
@@ -171,12 +168,10 @@ export class OpenOCDManager {
         }
 
         const openocdCmd = quotePath(config.openocdPath);
-        const quotedArgs = args.map(arg => quotePath(arg));
+        this.outputChannel.appendLine(`执行 OpenOCD 烧录: ${quotePath(openocdCmd)} ${args.map(arg => quotePath(arg)).join(' ')}`);
 
         return new Promise((resolve, reject) => {
-            const flashProcess = spawn(openocdCmd, quotedArgs, {
-                shell: true
-            });
+            const flashProcess = spawn(openocdCmd, args);
 
             flashProcess.stdout?.on('data', (data) => {
                 this.outputChannel.appendLine(data.toString());
@@ -212,7 +207,7 @@ export class OpenOCDManager {
         const args: string[] = [];
 
         if (config.openocdScriptsPath) {
-            args.push('-s', config.openocdScriptsPath);
+            args.push('-s', toForwardSlash(config.openocdScriptsPath));
         }
 
         args.push('-f', interfaceConfig);
@@ -222,12 +217,10 @@ export class OpenOCDManager {
         args.push('-c', 'exit');
 
         const openocdCmd = quotePath(config.openocdPath);
-        const quotedArgs = args.map(arg => quotePath(arg));
+        this.outputChannel.appendLine(`执行 OpenOCD 复位: ${quotePath(openocdCmd)} ${args.map(arg => quotePath(arg)).join(' ')}`);
 
         return new Promise((resolve, reject) => {
-            const resetProcess = spawn(openocdCmd, quotedArgs, {
-                shell: true
-            });
+            const resetProcess = spawn(openocdCmd, args);
 
             resetProcess.on('close', (code) => {
                 if (code === 0) {
